@@ -1,0 +1,94 @@
+---
+- hosts: localhost
+  become: yes
+  vars:
+    image: athimel/apache2-php5-mysql
+    name: media-wiki
+    src_port: 80
+    dest_port: 80
+    src_vol: /var/mediawiki/
+    dest_vol: /var/www/html
+    privileged: true
+    networks: mediawiki
+
+  tasks:
+   - name: Set SeLinux
+     selinux: policy=targeted state=disabled
+   - name: Docker Repo Configuration
+     shell: curl https://download.docker.com/linux/centos/docker-ce.repo > /etc/yum.repos.d/docker-ce.repo
+   - name: Installating Docker Pre-requisites
+     yum:
+      name: "{{ item }}"
+      state: latest
+     with_items:
+        - yum-utils
+        - device-mapper-persistent-data
+        - lvm2
+   - name: Downloading docker repo
+     get_url:
+      url: https://download.docker.com/linux/centos/docker-ce.repo
+      dest: /etc/yum.repos.d/docker-ce.repo
+      mode: 0644
+   - name: Docker Installation
+     yum: name=docker-ce state=present
+   - name: starting service
+     service: name=docker state=started enabled=yes
+   - name: Downloading mediawiki data
+     get_url:
+      url: https://releases.wikimedia.org/mediawiki/1.24/mediawiki-1.24.2.tar.gz
+      dest: /var/
+      mode: 0644
+   - name: Extracting data in /var/
+     unarchive:
+      src: /var/mediawiki-1.24.2.tar.gz
+      dest: /var/
+      remote_src: yes
+   - name: Correct data directories
+     command: mv /var/mediawiki-1.24.2 /var/mediawiki
+   - name: Changing ownership
+     file:
+      path: /var/mediawiki/
+      state: directory
+      recurse: yes
+      owner: root
+      group: root
+
+   - name: Installating Docker Pre-requisites
+     yum:
+      name: epel-release
+      state: latest
+   - name: Installing docker pre
+     yum:
+      name: python-pip
+      state: latest
+
+   - name: Installation docker-py
+     pip:
+      name: docker-py
+
+   - name: Create a network
+     docker_network:
+      name: mediawiki
+
+   - name: Create Container media-wiki
+     docker_container:
+      name: "{{ name }}"
+      image: "{{ image }}"
+      ports:
+       - "{{ src_port }}:{{ dest_port }}"
+      volumes:
+       - "{{ src_vol }}:{{ dest_vol }}"
+      networks:
+       - name: "{{ networks }}"
+      privileged: "{{ privileged }}"
+
+   - name: Creating a Mysql DB server for media-wiki
+     command: docker run -d -p 3306:3306 --name wiki-mysql --network=mediawiki --env="MYSQL_ROOT_PASSWORD=rachit" -d mysql --default-authentication-plugin=mysql_native_password
+   - name: Creating a database
+     shell: docker exec -it wiki-mysql  mysql -u root -p -e "CREATE DATABASE mediawiki_db;"| echo "rachit"
+   - name: Adding user
+     shell: docker exec -it wiki-mysql  mysql -u root -p -e "CREATE USER 'wiki_user'@'%' IDENTIFIED WITH mysql_native_password BY 'rachit_123';" | echo "rachit"
+   - name: Granting permission
+     shell: docker exec -it wiki-mysql  mysql -u root -p -e "GRANT ALL PRIVILEGES ON * . * TO 'wiki_user'@'%';" | echo "rachit"
+   - name: Mysql Command
+     shell: docker exec -it wiki-mysql  mysql -u root -p -e "FLUSH PRIVILEGES;" | echo "rachit"

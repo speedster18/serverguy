@@ -1,0 +1,277 @@
+MYSQL Commands:
+
+SELECT User,Host FROM mysql.user;
+
+Manually Installation:
+
+1) Install Docker
+# yum install -y yum-utils device-mapper-persistent-data lvm2 mysql		# MySQL is optional, not require for docker
+# yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+# yum install -y docker-ce
+# systemctl start docker && sudo systemctl enable docker
+
+2) Stop Selinux
+# setenforce 0
+
+3) Download and copy data
+# yum install wget
+# wget https://releases.wikimedia.org/mediawiki/1.24/mediawiki-1.24.2.tar.gz 
+# cp mediawiki-1.24.2.tar.gz /var/; cd /var; tar -xvf mediawiki-1.24.2.tar.gz
+# mv /var/mediawiki-1.24.2 /var/mediawiki
+# chown -R root:root /var/mediawiki
+
+4) Create network and add both into it
+# docker network create mediawiki
+
+5) Configure Media Wiki Application docker image
+# docker run -dit --name media-wiki --network=mediawiki -p 80:80 -v "/var/mediawiki/":/var/www/html athimel/apache2-php5-mysql
+
+6) Install Media Wiki MYSQL server
+# docker run -d -p 3306:3306 --name wiki-mysql --network=mediawiki --env="MYSQL_ROOT_PASSWORD=rachit" -d mysql --default-authentication-plugin=mysql_native_password
+
+[root@localhost var]# docker ps
+CONTAINER ID        IMAGE                        COMMAND                  CREATED             STATUS              PORTS                               NAMES
+ad20edd73e5f        mysql                        "docker-entrypoint.s…"   33 seconds ago      Up 31 seconds       0.0.0.0:3306->3306/tcp, 33060/tcp   wiki-mysql
+020235f9ab47        athimel/apache2-php5-mysql   "/usr/sbin/apache2ct…"   2 minutes ago       Up About a minute   0.0.0.0:80->80/tcp                  media-wiki
+
+# docker inspect media-wiki		-> Check IP and Other details
+# docker inspect wiki-mysql		-> Check IP and Other details
+
+
+7)  Create Database for Media WIki and Users		(Password : rachit)
+# docker exec -it wiki-mysql  mysql -u root -p -e "CREATE DATABASE mediawiki_db;"
+# docker exec -it wiki-mysql  mysql -u root -p -e "CREATE USER 'wiki_user'@'%' IDENTIFIED WITH mysql_native_password BY 'rachit_123';"
+# docker exec -it wiki-mysql  mysql -u root -p -e "GRANT ALL PRIVILEGES ON * . * TO 'wiki_user'@'%';"
+# docker exec -it wiki-mysql  mysql -u root -p -e "FLUSH PRIVILEGES;"
+
+5) Open your GUI Interface http://192.168.132.129 (IP address of media-wiki)
+
+Fill details and admin account details
+Name of Wiki: kunnu
+Username: kunnu
+password: redhat
+email: kunnu@gmail.com
+
+6) Once Installation done, download LocalSettings.php and paste on server (/var/mediawiki), will reflect under docker (/var/www/html/)
+
+7) Login via your account (kunnu)
+http://192.168.132.129/index.php/Main_Page
+
+
+############################################################################################################
+-> Access mysql server
+# docker exec -it wiki-mysql  mysql -u root -p		# password is rachit_123
+
+Details require for Media Wiki Application install
+DB hostname: Check IP address of your Wiki Application server (media-wiki) 
+# docker inspect media-wiki| grep -i ipaddress
+            "IPAddress": "172.17.0.2",
+                    "IPAddress": "172.17.0.2",
+
+Database host: 
+DB Database: mediawiki_db
+DB Username: wiki_user
+DB Password: rachit_123
+############################################################################################
+Ansible Installation (single file, no variable file as per requirement)
+[root@localhost ~]# cat mediawiki.yml
+---
+- hosts: localhost
+  become: yes
+  vars:
+    image: athimel/apache2-php5-mysql
+    name: media-wiki
+    src_port: 80
+    dest_port: 80
+    src_vol: /var/mediawiki/
+    dest_vol: /var/www/html
+    privileged: true
+    networks: mediawiki
+
+  tasks:
+   - name: Set SeLinux
+     selinux: policy=targeted state=disabled
+   - name: Docker Repo Configuration
+     shell: curl https://download.docker.com/linux/centos/docker-ce.repo > /etc/yum.repos.d/docker-ce.repo
+   - name: Installating Docker Pre-requisites
+     yum:
+      name: "{{ item }}"
+      state: latest
+     with_items:
+        - yum-utils
+        - device-mapper-persistent-data
+        - lvm2
+   - name: Downloading docker repo
+     get_url:
+      url: https://download.docker.com/linux/centos/docker-ce.repo
+      dest: /etc/yum.repos.d/docker-ce.repo
+      mode: 0644
+   - name: Docker Installation
+     yum: name=docker-ce state=present
+   - name: starting service
+     service: name=docker state=started enabled=yes
+   - name: Downloading mediawiki data
+     get_url:
+      url: https://releases.wikimedia.org/mediawiki/1.24/mediawiki-1.24.2.tar.gz
+      dest: /var/
+      mode: 0644
+   - name: Extracting data in /var/
+     unarchive:
+      src: /var/mediawiki-1.24.2.tar.gz
+      dest: /var/
+      remote_src: yes
+   - name: Correct data directories
+     command: mv /var/mediawiki-1.24.2 /var/mediawiki
+   - name: Changing ownership
+     file:
+      path: /var/mediawiki/
+      state: directory
+      recurse: yes
+      owner: root
+      group: root
+
+   - name: Installating Docker Pre-requisites
+     yum:
+      name: epel-release
+      state: latest
+   - name: Installing docker pre
+     yum:
+      name: python-pip
+      state: latest
+
+   - name: Installation docker-py
+     pip:
+      name: docker-py
+
+   - name: Create a network
+     docker_network:
+      name: mediawiki
+
+   - name: Create Container media-wiki
+     docker_container:
+      name: "{{ name }}"
+      image: "{{ image }}"
+      ports:
+       - "{{ src_port }}:{{ dest_port }}"
+      volumes:
+       - "{{ src_vol }}:{{ dest_vol }}"
+      networks:
+       - name: "{{ networks }}"
+      privileged: "{{ privileged }}"
+
+   - name: Creating a Mysql DB server for media-wiki
+     command: docker run -d -p 3306:3306 --name wiki-mysql --network=mediawiki --env="MYSQL_ROOT_PASSWORD=rachit" -d mysql --default-authentication-plugin=mysql_native_password
+   - name: Creating a database
+     shell: docker exec -it wiki-mysql  mysql -u root -p -e "CREATE DATABASE mediawiki_db;"| echo "rachit"
+   - name: Adding user
+     shell: docker exec -it wiki-mysql  mysql -u root -p -e "CREATE USER 'wiki_user'@'%' IDENTIFIED WITH mysql_native_password BY 'rachit_123';" | echo "rachit"
+   - name: Granting permission
+     shell: docker exec -it wiki-mysql  mysql -u root -p -e "GRANT ALL PRIVILEGES ON * . * TO 'wiki_user'@'%';" | echo "rachit"
+   - name: Mysql Command
+     shell: docker exec -it wiki-mysql  mysql -u root -p -e "FLUSH PRIVILEGES;" | echo "rachit"
+[root@localhost ~]#
+
+
+
+
+
+Ouput:
+[root@localhost ~]# ansible-playbook mediawiki.yml
+ [WARNING]: Could not match supplied host pattern, ignoring: all
+
+ [WARNING]: provided hosts list is empty, only localhost is available
+
+ [WARNING]: Found variable using reserved name: name
+
+
+PLAY [localhost] ****************************************************************************************************************************************************************************
+
+TASK [Gathering Facts] **********************************************************************************************************************************************************************
+ok: [localhost]
+
+TASK [Set SeLinux] **************************************************************************************************************************************************************************
+ [WARNING]: SELinux state change will take effect next reboot
+
+ok: [localhost]
+
+TASK [Docker Repo Configuration] ************************************************************************************************************************************************************
+ [WARNING]: Consider using get_url or uri module rather than running curl
+
+changed: [localhost]
+
+TASK [Installating Docker Pre-requisites] ***************************************************************************************************************************************************
+ok: [localhost] => (item=[u'yum-utils', u'device-mapper-persistent-data', u'lvm2'])
+
+TASK [Downloading docker repo] **************************************************************************************************************************************************************
+ok: [localhost]
+
+TASK [Docker Installation] ******************************************************************************************************************************************************************
+ok: [localhost]
+
+TASK [starting service] *********************************************************************************************************************************************************************
+ok: [localhost]
+
+TASK [Downloading mediawiki data] ***********************************************************************************************************************************************************
+ok: [localhost]
+
+TASK [Extracting data in /var/] *************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Correct data directories] *************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Changing ownership] *******************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Installating Docker Pre-requisites] ***************************************************************************************************************************************************
+ok: [localhost]
+
+TASK [Installing docker pre] ****************************************************************************************************************************************************************
+ok: [localhost]
+
+TASK [Installation docker-py] ***************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Create a network] *********************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Create Container media-wiki] **********************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Creating a Mysql DB server for media-wiki] ********************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Creating a database] ******************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Adding user] **************************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Granting permission] ******************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [Mysql Command] ************************************************************************************************************************************************************************
+changed: [localhost]
+
+PLAY RECAP **********************************************************************************************************************************************************************************
+localhost                  : ok=21   changed=12   unreachable=0    failed=0
+
+[root@localhost ~]#
+
+
+[root@localhost ~]# docker ps
+CONTAINER ID        IMAGE                        COMMAND                  CREATED             STATUS              PORTS                               NAMES
+4c26521b70a3        mysql                        "docker-entrypoint.s…"   45 seconds ago      Up 43 seconds       0.0.0.0:3306->3306/tcp, 33060/tcp   wiki-mysql
+95c33696507a        athimel/apache2-php5-mysql   "/usr/sbin/apache2ct…"   2 minutes ago       Up 2 minutes        0.0.0.0:80->80/tcp                  media-wiki
+
+[root@localhost ~]# docker inspect wiki-mysql | grep -i IPADDRESS
+            "SecondaryIPAddresses": null,
+            "IPAddress": "",
+                    "IPAddress": "172.18.0.3",
+					
+[root@localhost ~]# docker inspect media-wiki | grep -i IPADDRESS
+            "SecondaryIPAddresses": null,
+            "IPAddress": "172.17.0.2",
+                    "IPAddress": "172.17.0.2",
+                    "IPAddress": "172.18.0.2",
+
