@@ -3,9 +3,9 @@ The ansible code is runnning successfully and the output is also copied in the M
 
 STEPS:
 
-1. Run the below command on Git Bash (dekstop) to clone the repository.
+1. Run the below URL to clone the repository in your system.
 *
-git pull https://github.com/speedster18/serverguy.git
+  https://github.com/speedster18/serverguy.git
 *
 2. Setup a basemachine of RHEL7.
 3. Install ansible on the system using command>
